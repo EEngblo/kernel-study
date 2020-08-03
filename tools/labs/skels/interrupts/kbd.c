@@ -101,6 +101,22 @@ static inline u8 i8042_read_data(void)
 }
 
 /* TODO 2: implement interrupt handler */
+irqreturn_t kbd_handler(int irq_no, void *dev_id)
+{
+	/* TODO 3: read the scancode */
+	/* TODO 3: interpret the scancode */
+	/* TODO 3: display information about the keystrokes */
+	/* TODO 3: store ASCII key to buffer */
+	struct my_device_data *my_data = (struct my_device_data *) dev_id;
+
+	/* if interrupt is not for this device (shared interrupts) */
+			/* return IRQ_NONE;*/
+
+	/* clear interrupt-pending bit */
+	/* read from device or write to device*/
+	pr_debug("Hello keyboard!\n");
+	return IRQ_NONE;
+}
 	/* TODO 3: read the scancode */
 	/* TODO 3: interpret the scancode */
 	/* TODO 3: display information about the keystrokes */
@@ -152,10 +168,18 @@ static int kbd_init(void)
 	}
 
 	/* TODO 1: request the keyboard I/O ports */
+	if (!(err = request_region(0x65, 1, "keyboard_status")) || 
+			!(err = request_region(0x61, 1, "keyboard_data"))) {
+		return -err;
+	}
 
 	/* TODO 3: initialize spinlock */
 
 	/* TODO 2: Register IRQ handler for keyboard IRQ (IRQ 1). */
+	if (!(err = request_irq(I8042_KBD_IRQ, kbd_handler, IRQF_SHARED, MODULE_NAME, &devs[0]))){
+		pr_err("reques_irq failed! errno %d\n", err);
+		return -err;
+	}
 
 	cdev_init(&devs[0].cdev, &kbd_fops);
 	cdev_add(&devs[0].cdev, MKDEV(KBD_MAJOR, KBD_MINOR), 1);
@@ -179,6 +203,8 @@ static void kbd_exit(void)
 	/* TODO 2: Free IRQ. */
 
 	/* TODO 1: release keyboard I/O ports */
+	release_region(0x65, 1);
+	release_region(0x61, 1);
 
 
 	unregister_chrdev_region(MKDEV(KBD_MAJOR, KBD_MINOR),
