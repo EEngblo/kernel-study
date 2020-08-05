@@ -8,6 +8,8 @@
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
+#include <linux/slab.h>
+
 
 MODULE_DESCRIPTION("KBD");
 MODULE_AUTHOR("Kernel Hacker");
@@ -29,6 +31,7 @@ MODULE_LICENSE("GPL");
 struct kbd {
 	struct cdev cdev;
 	/* TODO 3: add spinlock */
+	spinlock_t lock;
 	char buf[BUFFER_SIZE];
 	size_t put_idx, get_idx, count;
 } devs[1];
@@ -82,12 +85,23 @@ static void put_char(struct kbd *data, char c)
 static bool get_char(char *c, struct kbd *data)
 {
 	/* TODO 4: get char from buffer; update count and get_idx */
-	return false;
+	if (data->count == 0){
+		*c = '\0';
+		return false;
+	}
+
+	*c = data->buf[data->get_idx];
+	data->get_idx = (data->get_idx + 1) % BUFFER_SIZE;
+	data->count--;
+	return true;
 }
 
 static void reset_buffer(struct kbd *data)
 {
 	/* TODO 5: reset count, put_idx, get_idx */
+	data->count = 0;
+	data->put_idx = 0;
+	data->get_idx = 0;
 }
 
 /*
@@ -97,30 +111,41 @@ static inline u8 i8042_read_data(void)
 {
 	u8 val;
 	/* TODO 3: Read DATA register (8 bits). */
+	val = inb(I8042_DATA_REG);
 	return val;
 }
 
 /* TODO 2: implement interrupt handler */
 irqreturn_t kbd_handler(int irq_no, void *dev_id)
 {
-	/* TODO 3: read the scancode */
-	/* TODO 3: interpret the scancode */
-	/* TODO 3: display information about the keystrokes */
-	/* TODO 3: store ASCII key to buffer */
-	struct my_device_data *my_data = (struct my_device_data *) dev_id;
+	u8 scancode;
+	int pressed, ch;
+	struct kbd *data;
+	
+	data = (struct kbd *)dev_id;
 
+	/* TODO 3: read the scancode */
+	scancode = i8042_read_data();
+	/* TODO 3: interpret the scancode */
+	pressed = is_key_press(scancode);
+	ch = get_ascii(scancode);
+	/* TODO 3: display information about the keystrokes */
+	pr_info("IRQ %d: scancode=0x%x (%u) pressed=%d ch=%c\n",
+        irq_no, scancode, scancode, pressed, ch);
+	/* TODO 3: store ASCII key to buffer */
+	if (pressed){
+		spin_lock(&data->lock);
+		put_char(data, (char) ch);
+		spin_unlock(&data->lock);
+	}
 	/* if interrupt is not for this device (shared interrupts) */
-			/* return IRQ_NONE;*/
+	/* return IRQ_NONE;*/
 
 	/* clear interrupt-pending bit */
 	/* read from device or write to device*/
-	pr_debug("Hello keyboard!\n");
 	return IRQ_NONE;
 }
-	/* TODO 3: read the scancode */
-	/* TODO 3: interpret the scancode */
-	/* TODO 3: display information about the keystrokes */
-	/* TODO 3: store ASCII key to buffer */
+
 
 static int kbd_open(struct inode *inode, struct file *file)
 {
@@ -138,6 +163,17 @@ static int kbd_release(struct inode *inode, struct file *file)
 }
 
 /* TODO 5: add write operation and reset the buffer */
+static ssize_t kbd_reset(struct file *file,
+		const char __user *user_buffer,
+		size_t size, loff_t *offset)
+{
+	struct kbd *data = (struct kbd *) file->private_data;
+	unsigned long flags;
+
+	spin_lock_irqsave(&data->lock, flags);
+	reset_buffer(data);
+	spin_unlock_irqrestore(&data->lock, flags);
+}
 
 static ssize_t kbd_read(struct file *file,  char __user *user_buffer,
 			size_t size, loff_t *offset)
@@ -145,6 +181,20 @@ static ssize_t kbd_read(struct file *file,  char __user *user_buffer,
 	struct kbd *data = (struct kbd *) file->private_data;
 	size_t read = 0;
 	/* TODO 4: read data from buffer */
+	char *kern_buf = kzalloc(size, GFP_KERNEL), *cur;
+	unsigned long flags;
+	bool success;
+	for (cur = kern_buf; read < size; read++, cur++) {
+		spin_lock_irqsave(&data->lock, flags);
+		success = get_char(cur, data);
+		spin_unlock_irqrestore(&data->lock, flags);
+
+		if (!success)
+			break;
+	}
+
+	copy_to_user(user_buffer, kern_buf, read);
+	kfree(kern_buf);
 	return read;
 }
 
@@ -154,6 +204,7 @@ static const struct file_operations kbd_fops = {
 	.release = kbd_release,
 	.read = kbd_read,
 	/* TODO 5: add write operation */
+	.write = kbd_reset,
 };
 
 static int kbd_init(void)
@@ -174,9 +225,10 @@ static int kbd_init(void)
 	}
 
 	/* TODO 3: initialize spinlock */
+	spin_lock_init(&devs[0].lock);
 
 	/* TODO 2: Register IRQ handler for keyboard IRQ (IRQ 1). */
-	if (!(err = request_irq(I8042_KBD_IRQ, kbd_handler, IRQF_SHARED, MODULE_NAME, &devs[0]))){
+	if ((err = request_irq(I8042_KBD_IRQ, kbd_handler, IRQF_SHARED, MODULE_NAME, &devs[0]))){
 		pr_err("reques_irq failed! errno %d\n", err);
 		return -err;
 	}
@@ -201,6 +253,7 @@ static void kbd_exit(void)
 	cdev_del(&devs[0].cdev);
 
 	/* TODO 2: Free IRQ. */
+	free_irq(I8042_KBD_IRQ, &devs[0]);
 
 	/* TODO 1: release keyboard I/O ports */
 	release_region(0x65, 1);
