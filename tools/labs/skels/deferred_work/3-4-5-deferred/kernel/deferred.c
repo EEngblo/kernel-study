@@ -60,8 +60,9 @@ static struct mon_proc *get_proc(pid_t pid)
 {
 	struct task_struct *task;
 	struct mon_proc *p;
-
+	rcu_read_lock();
 	task = pid_task(find_vpid(pid), PIDTYPE_PID);
+	rcu_read_unlock();
 	if (!task)
 		return ERR_PTR(-ESRCH);
 
@@ -111,7 +112,7 @@ static void timer_handler(struct timer_list *tl)
 					cur_elem->task->comm,
 					cur_elem->task->pid);
 				/* TODO 4: ... decrement task usage counter ... */
-				// put_task_struct(cur_elem->task);
+				put_task_struct(cur_elem->task);
 				/* TODO 4: ... remove it from the list ... */
 				list_del(cur_list);
 				/* TODO 4: ... free the struct mon_proc */
@@ -119,7 +120,7 @@ static void timer_handler(struct timer_list *tl)
 			}
 		}
 		spin_unlock(&dev.lock);
-
+		mod_timer(&dev.timer, jiffies + HZ);
 	}
 }
 
@@ -164,7 +165,6 @@ static long deferred_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 		{
 			/* TODO 4: use get_proc() and add task to list */
 			struct mon_proc *proc;
-			pr_info("pid %ld\n", arg);
 			proc = get_proc(arg);
 			if (IS_ERR(proc)){
 				pr_info("Invalid pid %ld\n", arg);
@@ -173,7 +173,7 @@ static long deferred_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 
 			// /* TODO 4: protect access to list */
 			spin_lock_bh(&my_data->lock);
-			list_add(&my_data->list, &proc->list);
+			list_add(&proc->list, &my_data->list);
 			spin_unlock_bh(&my_data->lock);
 
 			// /* TODO 4: set flag and schedule timer */
@@ -239,7 +239,7 @@ static void deferred_exit(void)
 	cancel_work_sync(&dev.work);
 
 	/* TODO 4: Cleanup the monitered process list */
-	spin_lock(&dev.lock);
+	spin_lock_bh(&dev.lock);
 	list_for_each_safe (cur_list, next_list, &dev.list) {
 			cur_elem = list_entry(cur_list, struct mon_proc, list);
 			/* TODO 4: ... decrement task usage counter ... */
@@ -249,7 +249,7 @@ static void deferred_exit(void)
 			/* TODO 4: ... free the struct mon_proc */
 			kfree(cur_elem);
 	}
-	spin_unlock(&dev.lock);
+	spin_unlock_bh(&dev.lock);
 
 }
 
